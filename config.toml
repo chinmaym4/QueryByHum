@@ -57,19 +57,10 @@ rhythm_mismatch = 0.3
 indel = 1.0
 
 [rank]
-# DEVIATION FROM SPEC (pending sign-off): SPEC.md lists scales {0.7, 0.85, 1.0,
-# 1.2, 1.4}. With that grid the rank matcher reaches only 0.79 top-3 on the
-# synthetic suite even with perfect (oracle) pitch: a tempo ratio between grid
-# points misaligns the 24 time-normalized samples by up to a note by the end of
-# the window. A 0.05-step grid gets 0.93 (oracle and CREPE). Spec grid:
-#   scales = [0.7, 0.85, 1.0, 1.2, 1.4]
 scales = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35, 1.40]
 hop_s = 0.25
 n_points = 24
-# Not in SPEC.md (underspecified): pitch differences smaller than this count as
-# ties in Kendall's tau. Without it, CREPE jitter within a held note (~0.05 st)
-# turns same-note sample pairs into coin flips. 0.5 = contour's repeat threshold.
-tie_tolerance = 0.5
+tie_tolerance = 0.5                # pitch differences below this (semitones) are ties in Kendall's tau
 
 [fusion]
 top_k = 5

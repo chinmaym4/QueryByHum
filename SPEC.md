@@ -166,9 +166,10 @@ Note-level, symbolic. Robust to wrong interval sizes.
 
 Compares the ordering of note heights, not their sizes. A single wrong note only slightly disturbs the ranking.
 
-- Let `D` = query voiced duration. For each song window of duration `D * s`, s in {0.7, 0.85, 1.0, 1.2, 1.4}, hop 0.25 s:
+- Let `D` = query voiced duration. For each song window of duration `D * s`, s in {0.70, 0.75, ..., 1.40} (15 scales, step 0.05), hop 0.25 s:
   - Sample both query and window `pitch_50ms` at L = 24 evenly spaced voiced points (time-normalized; this absorbs tempo and note-count differences).
   - Compute Kendall's tau between the two 24-point sequences. Implement vectorized in numpy, not via scipy per window.
+  - Ties: pitch differences smaller than `tie_tolerance` = 0.5 semitones count as ties (tau-b). This keeps CREPE jitter within a held note from turning same-note sample pairs into random signs.
 - Score: max tau over all windows. `offset_s` = start of the best window.
 
 ## Fusion (`fusion.py`)
