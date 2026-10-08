@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# earworm
+/data/
+eval/results/
+eval/hums/*
+!eval/hums/.gitkeep
+*.png

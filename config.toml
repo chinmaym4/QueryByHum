@@ -1,0 +1,89 @@
+# All tunable parameters for earworm. Values here mirror SPEC.md unless noted.
+
+[paths]
+data_dir = "data"                  # relative to this file unless absolute
+
+[device]
+prefer = "auto"                    # auto | cpu | cuda | mps
+
+[audio]
+sample_rate = 16000                # pitch extraction rate (always 16 kHz mono)
+separation_sample_rate = 44100     # demucs input rate (stereo)
+query_trim_top_db = 40.0           # leading/trailing silence trim for queries
+
+[separation]
+model = "htdemucs"
+stems = ["vocals", "other"]
+overlap = 0.25
+segment_split = true
+
+[pitch]
+model = "auto"                     # auto (full on GPU, tiny on CPU) | full | tiny
+hop_s = 0.01
+fmin = 65.0
+fmax = 1000.0
+batch_size = 2048
+periodicity_threshold = 0.5
+median_width = 5                   # frames, voiced runs only
+octave_jump_min = 11.0             # semitones
+octave_jump_max = 13.0
+octave_max_s = 0.15                # an excursion shorter than this gets folded back
+min_voiced_run_s = 0.05
+downsample_factor = 5              # pitch_10ms -> pitch_50ms
+
+[notes]
+gap_s = 0.06                       # unvoiced gap longer than this starts a new note
+pitch_change = 0.7                 # semitones away from running note median ...
+pitch_change_min_s = 0.04          # ... sustained at least this long starts a new note
+min_note_s = 0.08                  # shorter notes merge into closest-pitch neighbor
+
+[dtw]
+transpose_min = -12
+transpose_max = 12
+transpose_step = 1
+cost_clip = 2.0
+coarse = true                      # coarse pass, then full resolution on top candidates
+coarse_factor = 2                  # 50 ms -> 100 ms
+coarse_transpose_step = 2
+refine_top = 50
+
+[contour]
+repeat_threshold = 0.5             # |d| < this -> R
+large_threshold = 2.5              # |d| >= this -> U / D
+rhythm_threshold = 0.4             # |log2 ratio| > this -> shorter / longer
+sub_adjacent = 0.5
+sub_far = 1.0
+rhythm_mismatch = 0.3
+indel = 1.0
+
+[rank]
+# DEVIATION FROM SPEC (pending sign-off): SPEC.md lists scales {0.7, 0.85, 1.0,
+# 1.2, 1.4}. With that grid the rank matcher reaches only 0.79 top-3 on the
+# synthetic suite even with perfect (oracle) pitch: a tempo ratio between grid
+# points misaligns the 24 time-normalized samples by up to a note by the end of
+# the window. A 0.05-step grid gets 0.93 (oracle and CREPE). Spec grid:
+#   scales = [0.7, 0.85, 1.0, 1.2, 1.4]
+scales = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35, 1.40]
+hop_s = 0.25
+n_points = 24
+# Not in SPEC.md (underspecified): pitch differences smaller than this count as
+# ties in Kendall's tau. Without it, CREPE jitter within a held note (~0.05 st)
+# turns same-note sample pairs into coin flips. 0.5 = contour's repeat threshold.
+tie_tolerance = 0.5
+
+[fusion]
+top_k = 5
+[fusion.weights]
+dtw = 1.0
+contour = 1.0
+rank = 1.0
+
+[priors]
+artist_threshold = 85.0            # rapidfuzz score to count an artist hint as matching
+artist_boost = 0.5
+
+[deezer]
+search_url = "https://api.deezer.com/search"
+match_threshold = 85.0
+requests_per_second = 5.0
+timeout_s = 15.0
