@@ -89,7 +89,9 @@ def test_cli_end_to_end(workspace, capsys):
         w.writerow(["hum02.mp3", "Not In Library", "Nobody", "verse", "unknown", ""])
     assert run(cfg_file, "eval", "--eval-dir", str(ev), "--weights-search") == 0
     out = capsys.readouterr().out
-    assert "EXCLUDED: hum02.mp3" in out
+    assert "EXCLUDED: hum02.mp3" in out and "song not in library" in out
+    assert "Leave-one-out" in out and "without dtw" in out
+    assert "excluded 1 not in library, 0 unreadable" in out
     assert "WARNING" in out
     results = list((ev / "results").glob("*.csv"))
     assert len(results) == 2

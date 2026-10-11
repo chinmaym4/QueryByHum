@@ -150,6 +150,37 @@ def test_rank_finds_off_grid_start(cfg):
     assert r.offset_s == pytest.approx(3.4, abs=0.06)
 
 
+def test_dtw_fine_pass_on_all_songs_for_small_libraries(cfg):
+    import copy
+    rng = np.random.default_rng(8)
+    songs = [_feat(cfg, np.repeat(rng.integers(55, 70, size=40).astype(float), 30)) for _ in range(5)]
+    q = _feat(cfg, np.repeat(rng.integers(55, 70, size=12).astype(float), 30))
+    levels = [r.detail["level"] for r in DTWMatcher(cfg).score_many(q, songs)]
+    assert levels == ["fine"] * 5                     # 5 <= fine_all_max_songs
+    c = copy.deepcopy(cfg)
+    c.dtw.fine_all_max_songs = 1
+    c.dtw.refine_top = 1
+    for f in (q, *songs):
+        f.cache.clear()
+    levels = [r.detail["level"] for r in DTWMatcher(c).score_many(q, songs)]
+    assert levels.count("fine") == 1 and levels.count("coarse") == 4
+
+
+def test_search_reports_dtw_offset(cfg):
+    from earworm.search import Entry, search
+    rng = np.random.default_rng(9)
+    notes = rng.integers(55, 70, size=40).astype(float)
+    entries = [Entry("a", "A", "x", {"vocals": _feat(cfg, np.repeat(notes, 30))}),
+               Entry("b", "B", "x", {"vocals": _feat(cfg, np.repeat(rng.integers(55, 70, size=40).astype(float), 30))})]
+    out = search(_feat(cfg, np.repeat(notes[10:22] + 3, 30)), entries, cfg)
+    top = out.results[0]
+    assert top.entry.song_id == "a" and top.offset_matcher == "dtw"
+    assert top.offset_s == pytest.approx(top.per_matcher["dtw"].offset_s)
+    # without dtw, fall back to the highest-z matcher
+    out = search(_feat(cfg, np.repeat(notes[10:22] + 3, 30)), entries, cfg, matchers=("contour", "rank"))
+    assert out.results[0].offset_matcher in ("contour", "rank")
+
+
 # ---- fusion ----
 def test_zscore_handles_inf_and_constant():
     z = zscore(np.array([1.0, 2.0, -np.inf]))

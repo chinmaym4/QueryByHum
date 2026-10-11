@@ -268,7 +268,8 @@ class DTWMatcher:
 
     def score_many(self, query: Features, songs: Sequence[Features], groups: Sequence | None = None) -> list[MatchResult]:
         """Coarse pass (100 ms, transpositions step 2) over everything, then full
-        resolution on all items of the top `refine_top` groups (songs)."""
+        resolution on all items of the top `refine_top` groups (songs), or of every
+        group when there are at most `fine_all_max_songs` of them."""
         if not songs:
             return []
         if not self.c.coarse:
@@ -281,7 +282,10 @@ class DTWMatcher:
         best: dict = {}
         for g, r in zip(groups, coarse):
             best[g] = max(best.get(g, -np.inf), r.score)
-        top = set(sorted(best, key=best.get, reverse=True)[: int(self.c.refine_top)])
+        if len(best) <= int(self.c.fine_all_max_songs):
+            top = set(best)   # small library: every song at full resolution, no coarse/fine mixing
+        else:
+            top = set(sorted(best, key=best.get, reverse=True)[: int(self.c.refine_top)])
         sel = [k for k, g in enumerate(groups) if g in top]
         fine = self._run(query, [songs[k] for k in sel], "fine", self._fine_shifts())
         out = list(coarse)

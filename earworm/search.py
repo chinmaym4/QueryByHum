@@ -105,8 +105,11 @@ def search(query: Features, entries: Sequence[Entry], cfg: Section,
 
     results = []
     for rank, i in enumerate(fz.order, start=1):
-        om = str(fz.offset_matcher[i])
-        r = best_res[om][i]
+        om = str(cfg.fusion.get("offset_matcher", ""))
+        r = best_res[om][i] if om in best_res else None
+        if r is None or not np.isfinite(r.score):
+            om = str(fz.offset_matcher[i])
+            r = best_res[om][i]
         results.append(Result(
             rank=rank, entry=entries[i], fused=float(fz.fused[i]),
             z={m: float(fz.z[m][i]) for m in raw}, raw={m: float(raw[m][i]) for m in raw},

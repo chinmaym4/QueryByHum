@@ -46,6 +46,7 @@ coarse = true                      # coarse pass, then full resolution on top ca
 coarse_factor = 2                  # 50 ms -> 100 ms
 coarse_transpose_step = 2
 refine_top = 50
+fine_all_max_songs = 300          # at or below this many songs, all get the full-res pass
 key_refine = true                  # full-res pass: fractional key shift from the DTW path, then rescore
 
 [contour]
@@ -67,6 +68,7 @@ tie_tolerance = 0.5                # pitch differences below this (semitones) ar
 
 [fusion]
 top_k = 5
+offset_matcher = "dtw"             # reported offset comes from this matcher (fallback: highest z)
 [fusion.weights]
 dtw = 1.0
 contour = 1.0
@@ -75,6 +77,10 @@ rank = 1.0
 [priors]
 artist_threshold = 85.0            # rapidfuzz score to count an artist hint as matching
 artist_boost = 0.5
+
+[eval]
+label_match_threshold = 85.0       # rapidfuzz score to map a label row to a library song
+label_ambiguity_margin = 5.0       # warn when the runner-up song scores within this of the best
 
 [deezer]
 search_url = "https://api.deezer.com/search"

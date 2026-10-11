@@ -62,12 +62,23 @@ a minute or more per full-length song). Previews (30 s) are much cheaper.
    - `part`: `chorus | verse | hook_instrumental | rap | intro | other`
    - `in_preview`: `y | n | unknown`: whether the part you hummed falls inside the indexed
      audio (matters for Deezer's 30 s previews)
-4. Run `uv run earworm eval`. It prints top-1/3/5 accuracy and MRR for each matcher and the
-   fused ranking, broken down by `part` and `in_preview`, plus the correct song's rank for each
-   hum. The report is saved to `eval/results/<timestamp>.csv` (per hum) and
-   `<timestamp>_metrics.csv`. Labeled songs that aren't in the library are reported and excluded.
-   `--weights-search` grid-searches the fusion weights. With a small eval set that overfits,
-   so treat the result as a hint.
+4. Run `uv run earworm eval`. It prints:
+   - top-1/3/5 accuracy (with a 95% interval on top-5) and MRR for each matcher and the fused ranking;
+   - a **leave-one-out** table: fused accuracy with each matcher dropped, plus how many hums got
+     better or worse without it. Use the per-hum counts, not small accuracy differences, to judge
+     whether a matcher earns its place;
+   - the same metrics broken down by `part` and `in_preview`;
+   - every hum's rank of the correct song under each matcher, and which library song its label
+     matched (check for `AMBIGUOUS` warnings, e.g. a remix and the original both in the library);
+   - excluded hums, by reason (song not in library / hum unreadable).
+
+   The report is saved to `eval/results/<timestamp>.csv` (per hum) and `<timestamp>_metrics.csv`.
+   Ties count against the correct song. `--weights-search` grid-searches the fusion weights; with
+   a small eval set that overfits, so treat the result as a hint.
+
+   Caveats at small scale: 30 hums give roughly +/-15 points of uncertainty on top-5; offsets are
+   not evaluated (labels have no true start time); and an `in_preview` column that is mostly
+   `unknown` makes that breakdown uninterpretable, so fill it in.
 
 When a hum is ranked badly, run `earworm explain HUM SONG_ID` to see where each matcher aligned it.
 

@@ -146,6 +146,7 @@ Frame-level, continuous pitch. Most information, least robust to bad singing.
 - Local cost: `min(|q - s|, 2.0)` (clipped so single wrong notes don't dominate).
 - Score: `-(accumulated cost / query length)`.
 - Performance: implement in numba. Allowed optimization: coarse pass at 100 ms hop with transpositions in steps of 2, then full resolution on the top 50 songs.
+- Libraries of at most `fine_all_max_songs` (default 300) songs get the full-resolution pass on every song, so DTW scores are never a mix of coarse and fine.
 - Fractional key correction (full-resolution pass, top 50 songs): after the integer-transposition DTW, set the shift to t + median(song - shifted hum) over the aligned frame pairs of the best path and rescore; keep the better of the two. Hums are never on the song's semitone grid, so integer shifts alone leave up to 0.5 st of error on every frame. Target: under 10 s for a 1,000-song library on a laptop CPU, under 2 s for 100 songs.
 
 ### Matcher B: Quantized contour + rhythm (`contour.py`)
@@ -179,7 +180,7 @@ Compares the ordering of note heights, not their sizes. A single wrong note only
 - For each matcher, z-score its scores across all songs in the library for this query.
 - Fused score = weighted sum of z-scores. Default weights equal; configurable in `config.toml`.
 - Add priors (see Future hooks): `fused += prior_boost[song_id]`.
-- Return top K (default 5) with per-matcher z-scores and the offset from the matcher with the highest z-score for that song.
+- Return top K (default 5) with per-matcher z-scores and the offset from DTW (configurable `offset_matcher`); fall back to the matcher with the highest z-score for that song when DTW was not run or found no match.
 
 ## CLI
 
@@ -216,6 +217,10 @@ hum02.wav,...,...,verse,unknown,
 - `--weights-search`: grid search fusion weights in steps of 0.1 and report the best. Print a warning that with a small eval set this overfits.
 
 If a labeled song is not in the library, report it and exclude it from metrics.
+- Ranks are pessimistic: songs tied with the correct one count as ranked above it.
+- Top-5 accuracy carries a 95% Wilson interval.
+- Leave-one-out: fused accuracy with all three matchers and with each pair (dropped matcher weight 0), plus per-hum counts of hums whose rank improved/worsened and entered/left the top 5.
+- Label rows map to library songs by rapidfuzz (`[eval] label_match_threshold`); the matched song is printed per hum, with a warning when another song scores within `label_ambiguity_margin`. Exclusions are reported by reason (not in library vs unreadable hum).
 
 ## Tests (`tests/`)
 
