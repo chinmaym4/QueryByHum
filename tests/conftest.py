@@ -68,3 +68,27 @@ def synthetic_set(cfg, request) -> SyntheticSet:
     q_arr[:] = query_crepe
     np.savez(path, songs=songs_arr, queries=q_arr)
     return SyntheticSet(library, queries, song_crepe, query_crepe)
+
+
+@pytest.fixture(scope="session")
+def fractional_set(synthetic_set, cfg, request) -> SyntheticSet:
+    """Same 50-song library; 100 queries with continuous transpositions (e.g.
+    +2.37) and per-note intonation error, so query notes are off the song's
+    semitone grid. Query CREPE output is cached like synthetic_set's."""
+    from earworm.pitch import run_crepe
+
+    rng = np.random.default_rng(SEED + 2)
+    library = synthetic_set.library
+    queries = [synth.make_query(rng, library, int(rng.integers(0, N_SONGS)), fractional=True)
+               for _ in range(N_QUERIES)]
+    cache_dir = Path(request.config.cache.mkdir("earworm_synth"))
+    path = cache_dir / f"crepe_fractional_{_cache_key(cfg)}.npz"
+    if path.exists():
+        z = np.load(path, allow_pickle=True)
+        return SyntheticSet(library, queries, synthetic_set.song_crepe, list(z["queries"]))
+    noise = np.random.default_rng(SEED + 3)
+    query_crepe = [run_crepe(synth.render(q.melody, rng=noise), cfg) for q in queries]
+    q_arr = np.empty(len(query_crepe), dtype=object)
+    q_arr[:] = query_crepe
+    np.savez(path, queries=q_arr)
+    return SyntheticSet(library, queries, synthetic_set.song_crepe, query_crepe)

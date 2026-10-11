@@ -126,6 +126,30 @@ def test_dtw_matcher_transposition_and_offset(cfg):
     assert r.offset_s == pytest.approx(3.0, abs=0.06)
 
 
+def test_dtw_recovers_fractional_key(cfg):
+    """Song pitches are not on a semitone grid relative to their own median, so
+    the query/song median offset is fractional and integer shifts leave a residual."""
+    rng = np.random.default_rng(4)
+    notes = rng.uniform(55, 70, size=40)
+    song = np.repeat(notes, 30)
+    query = np.repeat(notes[10:22] + 2.37, 30)
+    r = DTWMatcher(cfg).score_many(_feat(cfg, query), [_feat(cfg, song)])[0]
+    assert -r.score < 0.01
+    assert r.offset_s == pytest.approx(3.0, abs=0.06)
+
+
+def test_rank_finds_off_grid_start(cfg):
+    from earworm.matchers.rank import RankMatcher
+
+    rng = np.random.default_rng(6)
+    notes = rng.integers(55, 70, size=60).astype(float)
+    song = np.repeat(notes, 17)                     # 170 ms notes: true start is off the 0.25 s grid
+    query = np.repeat(notes[20:40], 17)              # starts at 3.40 s
+    r = RankMatcher(cfg).score(_feat(cfg, query), _feat(cfg, song))
+    assert r.score > 0.95
+    assert r.offset_s == pytest.approx(3.4, abs=0.06)
+
+
 # ---- fusion ----
 def test_zscore_handles_inf_and_constant():
     z = zscore(np.array([1.0, 2.0, -np.inf]))

@@ -107,23 +107,39 @@ class RankMatcher:
             yield starts, w
 
     def score(self, query: Features, song: Features) -> MatchResult:
+        """Grid pass (hop_s, scale grid), then refine the best `refine_windows`
+        windows at a 1-frame start step and scales +/- refine_scale_step: tau is
+        sensitive to start shifts of a few frames, so the grid alone can miss the
+        true alignment and pick a compromise window elsewhere."""
         qv, _ = self._voiced(query)
         sv, sidx = self._voiced(song)
         L = int(self.c.n_points)
         if qv.size < L or sv.size < L:
             return NO_MATCH
         qs = qv[sample_points(qv.size, L)]
-        best = -np.inf
-        best_start = 0
-        best_w = 0
-        for starts, w in self.windows(song, qv.size):
-            tau = _scan_windows(qs, sv, starts, sample_points(w, L), float(self.c.get("tie_tolerance", 0.0)))
-            k = int(np.argmax(tau))
-            if tau[k] > best:
-                best, best_start, best_w = float(tau[k]), int(starts[k]), w
-        if not np.isfinite(best):
+        tol = float(self.c.get("tie_tolerance", 0.0))
+        cands = []   # (tau, start, window_frames, scale)
+        for s, (starts, w) in zip(self.c.scales, self.windows(song, qv.size)):
+            tau = _scan_windows(qs, sv, starts, sample_points(w, L), tol)
+            cands += [(float(tau[k]), int(starts[k]), w, s) for k in np.argsort(-tau)[: int(self.c.refine_windows)]]
+        if not cands:
             return NO_MATCH
-        hop = song.hop_50ms
-        return MatchResult(score=best, offset_s=float(sidx[best_start] * hop),
-                           detail={"start_frame": best_start, "window_frames": best_w,
-                                   "end_s": float((sidx[best_start + best_w - 1] + 1) * hop)})
+        cands.sort(reverse=True)
+        best = cands[0]
+        hop = max(1, int(round(self.c.hop_s / song.hop_50ms)))
+        ds = float(self.c.refine_scale_step)
+        for _, st, _, s in cands[: int(self.c.refine_windows)]:
+            for s2 in (s - ds, s, s + ds):
+                w = min(sv.size, max(L, int(round(qv.size * s2))))
+                starts = np.arange(max(0, st - hop + 1), min(sv.size - w, st + hop - 1) + 1, dtype=np.int64)
+                if starts.size == 0:
+                    continue
+                tau = _scan_windows(qs, sv, starts, sample_points(w, L), tol)
+                k = int(np.argmax(tau))
+                if tau[k] > best[0]:
+                    best = (float(tau[k]), int(starts[k]), w, s2)
+        tau, start, w, scale = best
+        hop_s = song.hop_50ms
+        return MatchResult(score=tau, offset_s=float(sidx[start] * hop_s),
+                           detail={"start_frame": start, "window_frames": w, "scale": scale,
+                                   "end_s": float((sidx[start + w - 1] + 1) * hop_s)})

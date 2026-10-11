@@ -73,7 +73,13 @@ class Query:
     melody: Melody
 
 
-def make_query(rng: np.random.Generator, lib: list[Melody], song: int, lead_s: float = 0.3) -> Query:
+def make_query(rng: np.random.Generator, lib: list[Melody], song: int, lead_s: float = 0.3,
+               fractional: bool = False, intonation_sd: float = 0.25) -> Query:
+    """SPEC query degradations. With fractional=True, the transposition is a
+    continuous offset (e.g. +2.37) and every note also gets a continuous
+    intonation error (normal, sd=intonation_sd semitones), as in real humming:
+    otherwise all query notes stay on a semitone grid relative to the song and
+    an integer-only key search can never be caught out."""
     m = lib[song]
     n = int(rng.integers(12, 21))
     start = int(rng.integers(0, len(m.pitches) - n + 1))
@@ -81,7 +87,10 @@ def make_query(rng: np.random.Generator, lib: list[Melody], song: int, lead_s: f
     d = m.durations[start : start + n].copy()
     true_offset = lead_s + float(m.onsets[start])
     # transposition and tempo
-    p += float(rng.integers(-7, 8))
+    if fractional:
+        p += float(rng.uniform(-7, 7)) + rng.normal(0, intonation_sd, size=n)
+    else:
+        p += float(rng.integers(-7, 8))
     d /= float(rng.uniform(0.75, 1.3))
     # pitch noise: 25% of notes off by +/- 1 semitone
     k = int(round(0.25 * n))

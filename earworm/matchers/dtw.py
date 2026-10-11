@@ -170,6 +170,37 @@ def _dtw_path(q, s, clip):
     return np.array(qi[::-1]), np.array(sj[::-1])
 
 
+@nb.njit(cache=True, parallel=True)
+def _key_refine_batch(qc, concat, offsets, centers, t0, clip):
+    """Fractional key correction. For each song k, take the DTW path at its
+    current shift t0[k], set the shift to t0 + median(song - shifted query) over
+    the aligned frame pairs, and rescore at that shift. Returns cost, start, end,
+    shift of the rescored alignment (the caller keeps whichever is better)."""
+    k_songs = offsets.shape[0] - 1
+    cost = np.full(k_songs, _INF)
+    start = np.full(k_songs, -1, np.int64)
+    end = np.full(k_songs, -1, np.int64)
+    shift = np.zeros(k_songs)
+    for k in nb.prange(k_songs):
+        a = offsets[k]
+        b = offsets[k + 1]
+        if b - a < 1:
+            continue
+        s = concat[a:b] - centers[k]
+        q = qc + t0[k]
+        qi, sj = _dtw_path(q, s, clip)
+        diff = np.empty(qi.shape[0])
+        for m in range(qi.shape[0]):
+            diff[m] = s[sj[m]] - q[qi[m]]
+        t = t0[k] + np.median(diff)
+        c, st, en = _subseq_dtw(qc + t, s, clip)
+        cost[k] = c
+        start[k] = st
+        end[k] = en
+        shift[k] = t
+    return cost, start, end, shift
+
+
 def _shifts(lo: int, hi: int, step: int) -> np.ndarray:
     return np.arange(lo, hi + 1e-9, step, dtype=np.float64)
 
@@ -204,7 +235,16 @@ class DTWMatcher:
         offsets = np.concatenate([[0], np.cumsum(lens)]).astype(np.int64)
         concat = np.concatenate([p[0] for p in preps]) if preps else np.zeros(0)
         centers = np.array([p[2] for p in preps], dtype=np.float64)
-        cost, start, end, shift = _dtw_batch(qv - qc, concat, offsets, centers, shifts, float(self.c.cost_clip))
+        clip = float(self.c.cost_clip)
+        cost, start, end, shift = _dtw_batch(qv - qc, concat, offsets, centers, shifts, clip)
+        if level == "fine" and self.c.key_refine:
+            ok = cost < _INF / 2
+            c2, s2, e2, t2 = _key_refine_batch(qv - qc, concat, offsets, centers, shift, clip)
+            better = ok & (c2 < cost)
+            cost = np.where(better, c2, cost)
+            start = np.where(better, s2, start)
+            end = np.where(better, e2, end)
+            shift = np.where(better, t2, shift)
         out = []
         for k, p in enumerate(preps):
             if cost[k] >= _INF / 2:

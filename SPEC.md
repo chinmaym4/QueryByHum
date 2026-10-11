@@ -145,7 +145,8 @@ Frame-level, continuous pitch. Most information, least robust to bad singing.
 - Step pattern: (1,1), (1,2), (2,1) to bound tempo ratio between 0.5x and 2x.
 - Local cost: `min(|q - s|, 2.0)` (clipped so single wrong notes don't dominate).
 - Score: `-(accumulated cost / query length)`.
-- Performance: implement in numba. Allowed optimization: coarse pass at 100 ms hop with transpositions in steps of 2, then full resolution on the top 50 songs. Target: under 10 s for a 1,000-song library on a laptop CPU, under 2 s for 100 songs.
+- Performance: implement in numba. Allowed optimization: coarse pass at 100 ms hop with transpositions in steps of 2, then full resolution on the top 50 songs.
+- Fractional key correction (full-resolution pass, top 50 songs): after the integer-transposition DTW, set the shift to t + median(song - shifted hum) over the aligned frame pairs of the best path and rescore; keep the better of the two. Hums are never on the song's semitone grid, so integer shifts alone leave up to 0.5 st of error on every frame. Target: under 10 s for a 1,000-song library on a laptop CPU, under 2 s for 100 songs.
 
 ### Matcher B: Quantized contour + rhythm (`contour.py`)
 
@@ -170,6 +171,7 @@ Compares the ordering of note heights, not their sizes. A single wrong note only
   - Sample both query and window `pitch_50ms` at L = 24 evenly spaced voiced points (time-normalized; this absorbs tempo and note-count differences).
   - Compute Kendall's tau between the two 24-point sequences. The window scan is a numba kernel (no per-window scipy calls), verified in tests against a vectorized numpy tau-b, which is itself verified against scipy.
   - Ties: pitch differences smaller than `tie_tolerance` = 0.5 semitones count as ties (tau-b). This keeps CREPE jitter within a held note from turning same-note sample pairs into random signs.
+- Refinement: re-scan the best 5 grid windows at a 1-frame (50 ms) start step and at scale +/- 0.025. Tau is sensitive to start shifts of a few frames, so the 0.25 s grid alone can miss the true alignment.
 - Score: max tau over all windows. `offset_s` = start of the best window.
 
 ## Fusion (`fusion.py`)
@@ -229,6 +231,7 @@ Synthetic tests that need no real recordings:
   - Each matcher: correct melody in top 3 for >= 80% of 100 queries
   - Fused: correct melody top 1 for >= 85%
   - `offset_s` within 1.0 s of the true excerpt start for >= 80% of correct matches
+- A second query set with continuous transpositions (e.g. +2.37) and per-note intonation error (sd 0.25 st), with the same accuracy and offset thresholds, plus: DTW's per-frame cost on the true song is within 0.01 (mean) / 0.03 (p90) of a brute-force 0.05-semitone transposition search.
 - Unit tests: Hz to MIDI conversion, octave fix, note segmentation on a known sine sequence, alignment cost on hand-built token strings, Kendall tau against scipy on random inputs.
 
 If thresholds fail, investigate and fix the matcher rather than lowering thresholds. Report what was changed.
