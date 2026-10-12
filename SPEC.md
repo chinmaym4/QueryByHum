@@ -39,7 +39,9 @@ earworm/
     separate.py              # demucs wrapper, stem caching
     pitch.py                 # torchcrepe -> cleaned MIDI pitch curve
     notes.py                 # note segmentation from pitch curve
+    features.py              # Features bundle (pitch_10ms, pitch_50ms, notes); audio -> Features
     library.py               # Song model, index build/load (SQLite + .npz features)
+    ingest.py                # per-song pipeline: separate -> features -> index
     sources/
       local.py               # ingest a folder of audio files
       playlist_csv.py        # ingest a CSV of title,artist[,added_at]
@@ -51,6 +53,7 @@ earworm/
       rank.py                # Matcher C
     fusion.py
     search.py                # query -> ranked results
+    evaluation.py            # eval metrics, leave-one-out, label matching (run_eval.py wraps it)
     plots.py                 # explain plots
     cli.py
     api.py                   # M2
@@ -58,6 +61,8 @@ earworm/
   eval/
     hums/                    # user-recorded hum files
     labels.csv
+    playlist.csv             # optional: your playlist (title,artist[,added_at] or Exportify)
+    results/                 # gitignored: per-run reports
     run_eval.py
   tests/
   data/                      # gitignored: audio cache, stems, features, index.db
@@ -90,12 +95,15 @@ Three sources:
 1. **Local folder:** `earworm ingest --folder PATH`. Read title/artist from tags via mutagen, fall back to parsing `Artist - Title` from the filename.
 2. **Playlist CSV:** `earworm ingest --csv playlist.csv --source deezer`. CSV columns: `title,artist[,added_at]`. Accept the column names produced by Exportify (Spotify playlist exporter) as well: map `Track Name`, `Artist Name(s)`, `Added At`.
 3. **Deezer previews:** for each CSV row, query `https://api.deezer.com/search?q=artist:"{artist}" track:"{title}"`, pick the best result by rapidfuzz score on title+artist (threshold 85), download the 30 s `preview` MP3. Verify the endpoint works at implementation time; if it fails, log clearly and skip the song. Rate limit to ~5 requests/s. Log unmatched rows to `data/unmatched.csv`.
+   - **Verified behavior (Oct 2026):** the search and preview download work without authentication, but the structured `artist:"X" track:"Y"` query returns zero results for every song tried (HTTP 200, `total: 0`). The client therefore tries it first and falls back to the plain query `"{artist} {title}"`, which matched all test songs at score 100. Only the first listed artist is used when a row has several. Previews are 30 s, 128 kbps stereo MP3 (about 480 kB) on signed URLs that expire, so they are downloaded at ingest time and never re-fetched from a stored URL.
 
 Per song:
 
 1. Decode to 44.1 kHz stereo for demucs.
 2. Run demucs `htdemucs`, keep `vocals` and `other` stems. Cache stems as 16 kHz mono FLAC in `data/stems/`.
 3. Extract features (below) for each stem.
+
+Measured on a 4-core CPU container (`tiny` CREPE): about 13-18 s demucs plus 7 s pitch/notes per 30 s preview, i.e. 20-25 s per song (about 60-75 min for 175 previews).
 
 The `other` stem catches instrumental hooks (synth lines, riffs). Search scores a song as the max over its stems. Make stem list configurable.
 
@@ -133,7 +141,10 @@ class Matcher(Protocol):
 class MatchResult:
     score: float        # higher = better
     offset_s: float     # where in the song the best match starts
+    detail: dict        # matcher-specific extras (transposition, end time, ...) used by `explain`
 ```
+
+A matcher may additionally provide `score_many(query, songs)` for a faster batch search over the whole library (DTW does; others are looped).
 
 ### Matcher A: Pitch DTW (`dtw.py`)
 
@@ -145,9 +156,11 @@ Frame-level, continuous pitch. Most information, least robust to bad singing.
 - Step pattern: (1,1), (1,2), (2,1) to bound tempo ratio between 0.5x and 2x.
 - Local cost: `min(|q - s|, 2.0)` (clipped so single wrong notes don't dominate).
 - Score: `-(accumulated cost / query length)`.
-- Performance: implement in numba. Allowed optimization: coarse pass at 100 ms hop with transpositions in steps of 2, then full resolution on the top 50 songs.
-- Libraries of at most `fine_all_max_songs` (default 300) songs get the full-resolution pass on every song, so DTW scores are never a mix of coarse and fine.
-- Fractional key correction (full-resolution pass, top 50 songs): after the integer-transposition DTW, set the shift to t + median(song - shifted hum) over the aligned frame pairs of the best path and rescore; keep the better of the two. Hums are never on the song's semitone grid, so integer shifts alone leave up to 0.5 st of error on every frame. Target: under 10 s for a 1,000-song library on a laptop CPU, under 2 s for 100 songs.
+- Performance: implement in numba. Target: under 10 s for a 1,000-song library on a laptop CPU, under 2 s for 100 songs.
+- Search is three passes:
+  1. Coarse: every song at 100 ms hop with transpositions in steps of 2.
+  2. Full resolution (50 ms, integer transpositions -12..+12): the top 50 songs by coarse score, or every song when the library has at most `fine_all_max_songs` (default 300) songs, so that DTW scores are never a mix of coarse and fine.
+  3. Fractional key correction (`key_refine`), on the same songs as pass 2: set the shift to `t + median(song - shifted hum)` over the aligned frame pairs of the best path, rescore, and keep the better of the two. Hums are never on the song's semitone grid, so integer shifts alone leave up to 0.5 st of error on every frame (measured: self-excerpt cost 0.35 -> 0.14 on one song, and a mean gap to a brute-force 0.05-semitone search of 0.039 -> 0.001).
 
 ### Matcher B: Quantized contour + rhythm (`contour.py`)
 
@@ -216,11 +229,15 @@ hum02.wav,...,...,verse,unknown,
 - Saved to `eval/results/<timestamp>.csv` and printed as a table
 - `--weights-search`: grid search fusion weights in steps of 0.1 and report the best. Print a warning that with a small eval set this overfits.
 
-If a labeled song is not in the library, report it and exclude it from metrics.
-- Ranks are pessimistic: songs tied with the correct one count as ranked above it.
-- Top-5 accuracy carries a 95% Wilson interval.
-- Leave-one-out: fused accuracy with all three matchers and with each pair (dropped matcher weight 0), plus per-hum counts of hums whose rank improved/worsened and entered/left the top 5.
-- Label rows map to library songs by rapidfuzz (`[eval] label_match_threshold`); the matched song is printed per hum, with a warning when another song scores within `label_ambiguity_margin`. Exclusions are reported by reason (not in library vs unreadable hum).
+If a labeled song is not in the library, report it and exclude it from metrics (excluded hums are listed by reason: not in library vs unreadable hum, and the report header shows how many were evaluated vs excluded).
+
+Report details:
+
+- Ranks are pessimistic: songs tied with the correct one count as ranked above it, for every matcher, the fused ranking, the weights search and leave-one-out.
+- Top-5 accuracy carries a 95% Wilson interval (at 30 hums it is roughly +/-15 points).
+- Leave-one-out: fused accuracy with all three matchers and with each pair (dropped matcher weight 0), plus per-hum counts of hums whose rank improved/worsened and that entered/left the top 5. Judge a matcher by those counts, not by small accuracy differences.
+- Label rows map to library songs by rapidfuzz (`[eval] label_match_threshold`, default 85); the matched song is printed per hum, with a warning when another song scores within `label_ambiguity_margin` (e.g. a remix next to the original).
+- Not evaluated: offsets (labels carry no true start time).
 
 ## Tests (`tests/`)
 
@@ -240,6 +257,32 @@ Synthetic tests that need no real recordings:
 - Unit tests: Hz to MIDI conversion, octave fix, note segmentation on a known sine sequence, alignment cost on hand-built token strings, Kendall tau against scipy on random inputs.
 
 If thresholds fail, investigate and fix the matcher rather than lowering thresholds. Report what was changed.
+
+## M1 implementation status and notes
+
+Synthetic suite (50 melodies, 100 queries each, real ffmpeg + CREPE), top-3 per matcher / fused top-1:
+
+| | spec queries | fractional-key queries |
+|---|---|---|
+| dtw | 0.99 | 0.98 |
+| contour | 1.00 | 0.98 |
+| rank | 0.94 | 0.91 |
+| fused top-1 | 1.00 | 1.00 |
+
+Offsets within 1 s of the true start: 0.99 (fused, DTW offsets). Measured search time (CPU, 2 stems per song): 175 previews about 1.1 s; 1,000 previews about 4 s; 1,000 full-length (210 s) songs about 20 s total (DTW 4.6 s, rank 14.5 s, contour 0.4 s), plus about 4 s of CREPE on the hum.
+
+Spec values changed after measurement (with the evidence):
+
+- Rank scales: the spec's {0.7, 0.85, 1.0, 1.2, 1.4} reached only 0.79 top-3 even on perfect pitch; 15 scales (step 0.05) reach 0.93. A 0.5 st tie tolerance in Kendall's tau lifted the CREPE result from 0.63 to 0.83 top-3 (CREPE jitter inside held notes made same-note pairs random).
+- DTW key search is fractional (see Matcher A), and rank re-scans the best windows at a 1-frame start step. A Queen self-excerpt exposed both: integer shifts left a cost of 0.3 on exact matches, and the 0.25 s start grid picked a window 2.25 s early because tau fell from 0.99 to 0.70 for a 2-frame start shift.
+- Fused offset comes from DTW rather than the highest-z matcher, after a bad rank offset leaked into the result.
+
+Known limitations:
+
+- Nothing is measured on real hums yet. Real audio so far: 3 Deezer previews, queried with excerpts of their own vocals stems.
+- Rank offsets are found in voiced-frame space, so a start error of a few frames across an unvoiced gap can still become seconds of wall-clock error (rank no longer sets the fused offset).
+- Self-excerpt DTW cost is about 0.14 rather than 0 on real songs; suspected cause (unverified): different 50 ms block phase between hum and song.
+- Above `fine_all_max_songs`, songs outside the coarse top 50 keep coarse DTW scores in the z-score.
 
 ## Milestone 2: Web app
 

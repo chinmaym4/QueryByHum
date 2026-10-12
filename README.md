@@ -3,7 +3,27 @@
 Hum a melody, find the song — searching only your own music library (up to ~1,000 songs).
 Design: [SPEC.md](SPEC.md) · project conventions: [CLAUDE.md](CLAUDE.md).
 
-Current milestone: **M1** — matching engine + evaluation harness, CLI only.
+Current milestone: **M1** — matching engine + evaluation harness, CLI only (no web app yet).
+
+**Status:** the pipeline, three matchers, fusion, ingestion (local folder and Deezer previews),
+eval harness and CLI are implemented, and the synthetic test suite passes (fused top-1 100% on
+synthetic queries, every matcher at least 91% top-3). **Nothing has been measured on real hums
+yet**: that is the next step, and the workflow is below.
+
+## Architecture
+
+```
+ingest:  folder / CSV+Deezer ─► demucs (vocals, other) ─► torchcrepe pitch ─► notes
+                                      └──────────── data/index.db + data/features/*.npz
+search:  hum ─► ffmpeg ─► pitch ─► notes ─► dtw ┐
+                                           contour ├─► z-score fusion ─► top-K + offset
+                                           rank ┘      (offset from DTW)
+```
+
+Code lives in `earworm/` (`audio`, `separate`, `pitch`, `notes`, `features`, `library`, `ingest`,
+`sources/`, `matchers/`, `fusion`, `search`, `evaluation`, `plots`, `cli`). All tunable values
+are in `config.toml`; [SPEC.md](SPEC.md) has the full design, the measured results and the
+known limitations.
 
 ## Setup
 
@@ -34,15 +54,25 @@ uv run earworm stats [--list]                             # library size, source
 
 - **Local folder:** title/artist come from tags (mutagen), else from an `Artist - Title.ext` filename.
 - **Playlist CSV:** columns `title,artist[,added_at]`, or an [Exportify](https://exportify.net)
-  export (`Track Name`, `Artist Name(s)`, `Added At`). Each row is looked up on Deezer; rows
-  without a confident match (rapidfuzz ≥ 85) or without a preview are written to `data/unmatched.csv`.
+  export (`Track Name`, `Artist Name(s)`, `Added At`; the first listed artist is used). Each row
+  is looked up on Deezer; rows without a confident match (rapidfuzz ≥ 85) or without a preview
+  are written to `data/unmatched.csv`. Deezer's structured `artist:"…" track:"…"` search currently
+  returns nothing, so the client falls back to a plain `artist title` query, which works. Previews
+  are 30 s MP3s on expiring signed URLs, so they are downloaded during ingest.
+- After a CSV ingest, run `uv run earworm stats` and check `data/unmatched.csv` to see which
+  songs are missing from the library (and so excluded from eval).
 - Ingestion is idempotent: songs whose features already exist are skipped unless you pass `--force`.
 - Everything generated (audio cache, stems, features, `index.db`) lives in `data/` (gitignored).
 - `search` prints rank, title, artist, fused score, the z-score from each matcher, and the
   offset in the song where the match starts.
 
-CPU cost: ingestion runs demucs and then CREPE on two stems, which is slow on CPU (roughly
-a minute or more per full-length song). Previews (30 s) are much cheaper.
+Cost (measured on a 4-core CPU container, no GPU):
+
+- **Ingest:** about 20-25 s per 30 s preview (demucs 13-18 s, pitch and notes for both stems
+  7 s), so roughly 60-75 minutes for 175 songs. Full-length songs are much slower on CPU.
+- **Search:** about 1.1 s to match one hum against 175 previews, about 4 s against 1,000
+  previews, about 20 s against 1,000 full-length songs, plus about 4 s of pitch extraction on the
+  hum itself.
 
 ## Recording and labeling hums for `earworm eval`
 
@@ -88,9 +118,20 @@ Audio → 16 kHz mono → torchcrepe pitch (10 ms) → cleaned MIDI curve → no
 split by demucs into `vocals` and `other` stems, and each song scores as the max over its stems.
 Three matchers score every song:
 
-- **dtw:** subsequence DTW on the continuous pitch curve (key- and tempo-invariant)
+- **dtw:** subsequence DTW on the continuous pitch curve, tolerant of key (whole-semitone
+  search, then a fractional key correction from the DTW path) and tempo (0.5-2x). Libraries of
+  up to 300 songs (`fine_all_max_songs`) get the full-resolution pass on every song.
 - **contour:** alignment of quantized up/down/repeat intervals plus rhythm tokens
-- **rank:** Kendall's tau between time-normalized pitch samples
+- **rank:** Kendall's tau between time-normalized pitch samples (15 tempo scales, near-equal
+  pitches counted as ties, best windows re-scanned at a fine start step)
 
 Their scores are z-scored across the library and summed with the weights in `config.toml`.
-All tunable parameters are in `config.toml`.
+The match offset shown by `search` comes from DTW. All tunable parameters are in `config.toml`.
+
+## Tests
+
+`uv run pytest` runs unit tests plus the synthetic accuracy suites (random melodies rendered to
+audio and degraded with transposition, tempo change, wrong notes and note splits; a second set uses
+continuous transpositions and per-note intonation error, because whole-semitone transpositions
+cannot expose key-estimation errors). The accuracy thresholds come from SPEC.md and are never
+loosened to make a run pass.
