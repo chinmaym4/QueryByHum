@@ -83,21 +83,31 @@ Cost (measured on a 4-core CPU container, no GPU):
 3. Add one row per hum to `eval/labels.csv`:
 
    ```
-   hum_file,title,artist,part,in_preview,notes
-   hum01.m4a,Hotline Bling,Drake,chorus,y,
-   hum02.m4a,Blinding Lights,The Weeknd,hook_instrumental,unknown,synth riff
+   hum_file,title,artist,part,in_preview,notes,true_offset_s
+   hum01.m4a,Hotline Bling,Drake,chorus,y,,12.5
+   hum02.m4a,Blinding Lights,The Weeknd,hook_instrumental,unknown,synth riff,
    ```
 
    - `title`, `artist`: as in your library (fuzzy matched, so small differences are fine)
    - `part`: `chorus | verse | hook_instrumental | rap | intro | other`
    - `in_preview`: `y | n | unknown`: whether the part you hummed falls inside the indexed
      audio (matters for Deezer's 30 s previews)
+   - `true_offset_s` (optional): where the hummed part starts, **in seconds into the indexed
+     audio**, i.e. into the 30 s preview file in `data/audio/<song_id>.mp3` for Deezer songs, not
+     into the full track (a preview is an excerpt from an unknown point of the song, so a
+     full-track timestamp would be meaningless). Leave it blank for hums with `in_preview=n`.
+     A non-numeric or negative value is an error, not silently ignored.
 4. Run `uv run earworm eval`. It prints:
    - top-1/3/5 accuracy (with a 95% interval on top-5) and MRR for each matcher and the fused ranking;
    - a **leave-one-out** table: fused accuracy with each matcher dropped, plus how many hums got
      better or worse without it. Use the per-hum counts, not small accuracy differences, to judge
      whether a matcher earns its place;
    - the same metrics broken down by `part` and `in_preview`;
+   - **offset accuracy** for hums that have `true_offset_s`: the fraction within
+     `[eval] offset_tolerance_s` (1 s) of the truth and the median error, per matcher and fused,
+     for all such hums and for those where fused ranked the song first;
+   - every hum's offset under each matcher and the fused offset, with the **maximum spread**
+     between the three matchers (a large spread means they disagree about where the hum matches);
    - every hum's rank of the correct song under each matcher, and which library song its label
      matched (check for `AMBIGUOUS` warnings, e.g. a remix and the original both in the library);
    - excluded hums, by reason (song not in library / hum unreadable).
@@ -109,6 +119,10 @@ Cost (measured on a 4-core CPU container, no GPU):
    Caveats at small scale: 30 hums give roughly +/-15 points of uncertainty on top-5; offsets are
    not evaluated (labels have no true start time); and an `in_preview` column that is mostly
    `unknown` makes that breakdown uninterpretable, so fill it in.
+
+To choose which songs to hum, `uv run python eval/pick_hums.py` draws a seeded random sample
+(40 songs, seed 42 by default) from `eval/playlist.csv`, writes `eval/hum_sample.csv` and prints the
+list with the seed and the playlist checksum. The draw never looks at what ingested or matched.
 
 When a hum is ranked badly, run `earworm explain HUM SONG_ID` to see where each matcher aligned it.
 

@@ -84,18 +84,23 @@ def test_cli_end_to_end(workspace, capsys):
     hum.rename(ev / "hums" / "hum01.mp3")
     with open(ev / "labels.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["hum_file", "title", "artist", "part", "in_preview", "notes"])
-        w.writerow(["hum01.mp3", "Song 2", "Artist 2", "chorus", "y", ""])
-        w.writerow(["hum02.mp3", "Not In Library", "Nobody", "verse", "unknown", ""])
+        w.writerow(["hum_file", "title", "artist", "part", "in_preview", "notes", "true_offset_s"])
+        w.writerow(["hum01.mp3", "Song 2", "Artist 2", "chorus", "y", "", f"{0.3 + m.onsets[8]:.3f}"])
+        w.writerow(["hum02.mp3", "Not In Library", "Nobody", "verse", "unknown", "", ""])
     assert run(cfg_file, "eval", "--eval-dir", str(ev), "--weights-search") == 0
     out = capsys.readouterr().out
     assert "EXCLUDED: hum02.mp3" in out and "song not in library" in out
     assert "Leave-one-out" in out and "without dtw" in out
     assert "excluded 1 not in library, 0 unreadable" in out
+    assert "Offset accuracy (seconds into the indexed audio" in out and "max spread between matchers" in out
+    block = out.splitlines()
+    start = next(i for i, l in enumerate(block) if "all hums with true_offset_s" in l)
+    fused_line = next(l for l in block[start:] if l.strip().startswith("fused"))
+    assert float(fused_line.split()[1]) == 1.0      # fused offset within 1 s of the true start
     assert "WARNING" in out
     results = list((ev / "results").glob("*.csv"))
-    assert len(results) == 2
-    per_hum = next(p for p in results if not p.stem.endswith("_metrics"))
+    assert len(results) == 3                            # per-hum, metrics, offset accuracy
+    per_hum = next(p for p in results if not p.stem.endswith(("_metrics", "_offset_accuracy")))
     rows = list(csv.DictReader(open(per_hum)))
     assert rows[0]["rank_fused"] == "1"
 

@@ -1,8 +1,11 @@
 import numpy as np
 import pytest
 
-from earworm.evaluation import (HumLabel, HumResult, find_song, fused_rank, leave_one_out, metrics,
-                                pessimistic_rank, wilson_interval)
+from types import SimpleNamespace
+
+from earworm.evaluation import (HumLabel, HumResult, find_song, fused_rank, leave_one_out, matcher_offsets, metrics,
+                                offset_accuracy, pessimistic_rank, read_labels, sample_playlist, wilson_interval)
+from earworm.matchers.base import NO_MATCH, MatchResult
 from earworm.search import Entry
 
 
@@ -56,3 +59,62 @@ def test_wilson_interval_and_metrics():
     assert lo == pytest.approx(0.332, abs=0.002) and hi == pytest.approx(0.668, abs=0.002)
     m = metrics([1, 2, 6, 10])
     assert m["top5"] == 0.5 and m["top5_lo"] < 0.5 < m["top5_hi"]
+
+
+def test_read_labels_true_offset_optional_and_validated(tmp_path):
+    p = tmp_path / "labels.csv"
+    p.write_text("hum_file,title,artist,part,in_preview,notes,true_offset_s\n"
+                 "a.wav,T,A,chorus,y,,12.5\nb.wav,T,A,verse,y,,\n")
+    labs = read_labels(p)
+    assert labs[0].true_offset_s == 12.5 and labs[1].true_offset_s is None
+    # old files without the column still load
+    p.write_text("hum_file,title,artist,part,in_preview,notes\na.wav,T,A,chorus,y,\n")
+    assert read_labels(p)[0].true_offset_s is None
+    for bad in ("abc", "-3", "nan"):
+        p.write_text(f"hum_file,title,artist,part,in_preview,notes,true_offset_s\na.wav,T,A,chorus,y,,{bad}\n")
+        with pytest.raises(ValueError, match="true_offset_s"):
+            read_labels(p)
+
+
+def _pm(**offsets):
+    return SimpleNamespace(per_matcher={m: (MatchResult(-0.1, o) if o is not None else NO_MATCH)
+                                        for m, o in offsets.items()})
+
+
+def test_matcher_offsets_and_max_spread():
+    off, spread = matcher_offsets(_pm(dtw=8.0, contour=8.5, rank=10.25))
+    assert off == {"dtw": 8.0, "contour": 8.5, "rank": 10.25} and spread == pytest.approx(2.25)
+    off, spread = matcher_offsets(_pm(dtw=8.0, contour=None, rank=9.0))     # a matcher with no match is NaN
+    assert np.isnan(off["contour"]) and spread == pytest.approx(1.0)
+    assert np.isnan(matcher_offsets(_pm(dtw=8.0, contour=None, rank=None))[1])
+
+
+def _off_res(true, ranks_fused, **offs):
+    lab = HumLabel("h.wav", "t", "a", "chorus", "y", true_offset_s=true)
+    r = HumResult(lab, "s0", {"dtw": 1, "contour": 1, "rank": 1, "fused": ranks_fused}, {}, 0)
+    r.offsets = offs
+    return r
+
+
+def test_offset_accuracy_counts_missing_offsets_as_misses():
+    rs = [_off_res(8.0, 1, dtw=8.2, contour=9.5, rank=float("nan"), fused=8.2),
+          _off_res(5.0, 3, dtw=5.9, contour=5.0, rank=5.0, fused=7.0),
+          _off_res(None, 1, dtw=0.0, contour=0.0, rank=0.0, fused=0.0)]          # no true offset: ignored
+    t = offset_accuracy(rs, 1.0)
+    assert t["dtw"]["n"] == 2 and t["dtw"]["within"] == 1.0
+    assert t["contour"]["within"] == 0.5
+    assert t["rank"]["within"] == 0.5 and t["rank"]["n_no_offset"] == 1       # NaN offset is a miss
+    assert t["fused"]["within"] == 0.5 and t["fused"]["median_abs_err"] == pytest.approx(1.1)
+    t1 = offset_accuracy(rs, 1.0, only_fused_top1=True)
+    assert t1["dtw"]["n"] == 1 and t1["fused"]["within"] == 1.0
+
+
+def test_sample_playlist_is_seeded_distinct_and_ordered():
+    rows = [f"row{i}" for i in range(153)]
+    a = sample_playlist(rows, 40, 42)
+    assert a == sample_playlist(rows, 40, 42)                      # deterministic
+    assert a != sample_playlist(rows, 40, 43)
+    assert len({i for i, _ in a}) == 40 and [i for i, _ in a] == sorted(i for i, _ in a)
+    assert all(rows[i - 1] == r for i, r in a)                      # 1-based row numbers line up
+    with pytest.raises(ValueError):
+        sample_playlist(rows, 154, 0)

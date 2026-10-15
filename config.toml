@@ -81,6 +81,7 @@ artist_boost = 0.5
 [eval]
 label_match_threshold = 85.0       # rapidfuzz score to map a label row to a library song
 label_ambiguity_margin = 5.0       # warn when the runner-up song scores within this of the best
+offset_tolerance_s = 1.0            # an offset within this many seconds of true_offset_s counts as correct
 
 [deezer]
 search_url = "https://api.deezer.com/search"

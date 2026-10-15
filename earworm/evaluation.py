@@ -27,6 +27,7 @@ class HumLabel:
     part: str
     in_preview: str
     notes: str = ""
+    true_offset_s: float | None = None   # where the hummed part starts, in seconds into the INDEXED audio
 
 
 @dataclass
@@ -37,6 +38,10 @@ class HumResult:
     z: dict[str, np.ndarray] = field(repr=False)   # per-matcher z over library order
     truth_index: int = -1
     match_note: str = ""                           # how the label was mapped to a library song
+    offsets: dict[str, float] = field(default_factory=dict)   # dtw/contour/rank/fused offset of the TRUE song (NaN = none)
+    offset_matcher: str = ""                       # matcher the fused offset came from
+    spread_s: float = float("nan")                 # max - min over the three matchers' offsets
+    duration_s: float | None = None                # length of the indexed audio, if known
 
 
 @dataclass
@@ -45,16 +50,76 @@ class Excluded:
     reason: str
 
 
+def _parse_offset(raw: str, hum_file: str) -> float | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        t = float(raw)
+    except ValueError:
+        raise ValueError(f"labels.csv: {hum_file}: true_offset_s {raw!r} is not a number of seconds") from None
+    if not np.isfinite(t) or t < 0:
+        raise ValueError(f"labels.csv: {hum_file}: true_offset_s must be >= 0, got {raw!r}")
+    return t
+
+
 def read_labels(path: str | Path) -> list[HumLabel]:
     with open(path, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
     out = []
     for r in rows:
-        out.append(HumLabel(hum_file=r["hum_file"].strip(), title=r["title"].strip(), artist=r["artist"].strip(),
+        hum = r["hum_file"].strip()
+        out.append(HumLabel(hum_file=hum, title=r["title"].strip(), artist=r["artist"].strip(),
                             part=(r.get("part") or "other").strip() or "other",
                             in_preview=(r.get("in_preview") or "unknown").strip() or "unknown",
-                            notes=(r.get("notes") or "").strip()))
+                            notes=(r.get("notes") or "").strip(),
+                            true_offset_s=_parse_offset(r.get("true_offset_s"), hum)))
     return out
+
+
+def matcher_offsets(result) -> tuple[dict[str, float], float]:
+    """Offsets (seconds) each matcher reported for one song, and their max spread.
+
+    A matcher with no usable match (non-finite score) contributes NaN. The spread
+    is max - min over the matchers that did report, NaN if fewer than two did."""
+    off = {}
+    for m in MATCHER_NAMES:
+        r = result.per_matcher.get(m)
+        off[m] = float(r.offset_s) if r is not None and np.isfinite(r.score) else float("nan")
+    vals = [v for v in off.values() if np.isfinite(v)]
+    spread = float(max(vals) - min(vals)) if len(vals) >= 2 else float("nan")
+    return off, spread
+
+
+def offset_accuracy(results: list["HumResult"], tolerance_s: float, only_fused_top1: bool = False):
+    """Per system: n, fraction within tolerance of true_offset_s, median |error|.
+
+    Uses every hum that has true_offset_s (optionally only those where the fused
+    ranking put the true song first). Offsets are those of the TRUE song."""
+    rows = [r for r in results if r.label.true_offset_s is not None
+            and (not only_fused_top1 or r.ranks["fused"] == 1)]
+    table = {}
+    for sysname in SYSTEMS:
+        errs = np.array([abs(r.offsets[sysname] - r.label.true_offset_s) for r in rows], dtype=float)
+        ok = np.isfinite(errs)
+        # a hum whose matcher gave no offset counts as a miss, not as missing data
+        table[sysname] = {"n": len(errs), "n_no_offset": int((~ok).sum()),
+                          "within": float(np.sum(errs[ok] <= tolerance_s) / len(errs)) if len(errs) else float("nan"),
+                          "median_abs_err": float(np.median(errs[ok])) if ok.any() else float("nan")}
+    return table
+
+
+def sample_playlist(rows: list, n: int, seed: int) -> list[tuple[int, object]]:
+    """Seeded random sample of playlist rows, as (1-based playlist row, row) sorted by row.
+
+    Deterministic for a given (rows, n, seed). Nothing about the rows (ingest
+    success, difficulty, artist) influences which are drawn."""
+    import random
+
+    if n > len(rows):
+        raise ValueError(f"cannot sample {n} songs from a playlist of {len(rows)}")
+    picked = random.Random(seed).sample(range(len(rows)), n)
+    return [(i + 1, rows[i]) for i in sorted(picked)]
 
 
 def label_scores(label: HumLabel, entries: list[Entry]) -> np.ndarray:
@@ -138,6 +203,11 @@ def run_hums(labels: list[HumLabel], hums_dir: Path, entries: list[Entry], cfg: 
         raw = {m: np.array([idx[e.song_id].raw[m] for e in entries]) for m in MATCHER_NAMES}
         z = {m: np.array([idx[e.song_id].z[m] for e in entries]) for m in MATCHER_NAMES}
         res = HumResult(lab, entries[ti].song_id, {}, z, ti, note)
+        true_res = idx[entries[ti].song_id]
+        res.offsets, res.spread_s = matcher_offsets(true_res)
+        res.offsets["fused"] = float(true_res.offset_s)
+        res.offset_matcher = true_res.offset_matcher
+        res.duration_s = entries[ti].meta.get("duration_s") or None
         res.ranks = {m: pessimistic_rank(raw[m], ti) for m in MATCHER_NAMES}
         res.ranks["fused"] = fused_rank(res, weights)
         results.append(res)
@@ -237,6 +307,48 @@ def run_eval(cfg: Section, entries: list[Entry], labels_path: Path, hums_dir: Pa
             out.append(format_metrics_table(f"{attr} = {g}", table))
             rows += [(attr, g, s, m) for s, m in table.items()]
 
+    tol = float(cfg.get("eval", {}).get("offset_tolerance_s", 1.0))
+    off_rows = []
+    labeled = [r for r in results if r.label.true_offset_s is not None]
+    for r in labeled:
+        if r.label.in_preview == "n":
+            out.append(f"WARNING: {r.label.hum_file} has true_offset_s but in_preview=n; the hummed part is "
+                       f"outside the indexed audio, so its offset cannot be matched")
+        if r.duration_s and r.label.true_offset_s > r.duration_s:
+            out.append(f"WARNING: {r.label.hum_file} true_offset_s={r.label.true_offset_s:.1f} is beyond the "
+                       f"indexed audio ({r.duration_s:.1f} s); true_offset_s must be seconds into the indexed "
+                       f"audio (the 30 s preview for Deezer songs), not into the full track")
+    if labeled:
+        out.append(f"Offset accuracy (seconds into the indexed audio; within +/-{tol:g} s; "
+                   f"{len(labeled)} of {len(results)} hums have true_offset_s)")
+        for title, only in (("  all hums with true_offset_s", False), ("  only hums where fused ranked the song 1st", True)):
+            table = offset_accuracy(results, tol, only_fused_top1=only)
+            out.append(f"{title}  (n={next(iter(table.values()))['n']})")
+            out.append(f"    {'system':10s} {'within':>7s} {'median |err| (s)':>17s} {'no offset':>10s}")
+            for sysname, m in table.items():
+                out.append(f"    {sysname:10s} {m['within']:>7.2f} {m['median_abs_err']:>17.2f} {m['n_no_offset']:>10d}")
+            off_rows += [("all" if not only else "fused_top1", sysname, m) for sysname, m in table.items()]
+        out.append("  (fused offset comes from DTW unless DTW had no match)")
+    else:
+        out.append("Offset accuracy: no hum has true_offset_s (optional labels.csv column)")
+
+    out.append("Per-hum offsets in seconds into the indexed audio; spread = max - min over dtw/contour/rank")
+    out.append(f"  {'hum_file':24s} {'true':>6s} {'dtw':>7s} {'contour':>8s} {'rank':>7s} {'fused':>7s} "
+               f"{'(from)':>8s} {'spread':>7s} {'fused err':>10s}")
+    fmt = lambda v: "     - " if not np.isfinite(v) else f"{v:7.2f}"
+    for r in results:
+        true = r.label.true_offset_s
+        err = abs(r.offsets["fused"] - true) if true is not None else float("nan")
+        out.append(f"  {r.label.hum_file:24s} {'-' if true is None else f'{true:6.2f}':>6s} {fmt(r.offsets['dtw'])} "
+                   f"{fmt(r.offsets['contour']):>8s} {fmt(r.offsets['rank'])} {fmt(r.offsets['fused'])} "
+                   f"{r.offset_matcher:>8s} {fmt(r.spread_s)} {'-' if not np.isfinite(err) else f'{err:.2f}':>10s}")
+    spreads = [(r.spread_s, r.label.hum_file) for r in results if np.isfinite(r.spread_s)]
+    if spreads:
+        worst = max(spreads)
+        wide = sum(sp > tol for sp, _ in spreads)
+        out.append(f"  max spread between matchers: {worst[0]:.2f} s ({worst[1]}); "
+                   f"{wide} of {len(spreads)} hums have spread > {tol:g} s")
+
     out.append("Per-hum rank of the correct song")
     out.append(f"  {'hum_file':24s} {'part':18s} {'prev':5s} " + " ".join(f"{s:>7s}" for s in SYSTEMS)
                + "  matched song (label score)")
@@ -256,20 +368,33 @@ def run_eval(cfg: Section, entries: list[Entry], labels_path: Path, hums_dir: Pa
     per_hum = results_dir / f"{ts}.csv"
     with open(per_hum, "w", newline="") as f:
         w = csv.writer(f)
+        off_cols = ["true_offset_s", *[f"offset_{s}" for s in SYSTEMS], "offset_fused_from", "offset_spread_s"]
         w.writerow(["hum_file", "title", "artist", "part", "in_preview", "song_id", *[f"rank_{s}" for s in SYSTEMS],
-                    "label_match"])
+                    *off_cols, "label_match"])
+        blank = lambda v: "" if v is None or (isinstance(v, float) and not np.isfinite(v)) else v
         for r in results:
             w.writerow([r.label.hum_file, r.label.title, r.label.artist, r.label.part, r.label.in_preview,
-                        r.song_id, *[r.ranks[s] for s in SYSTEMS], r.match_note])
+                        r.song_id, *[r.ranks[s] for s in SYSTEMS],
+                        blank(r.label.true_offset_s), *[blank(r.offsets[s]) for s in SYSTEMS], r.offset_matcher,
+                        blank(r.spread_s), r.match_note])
         for ex in excluded:
             lab = ex.label
             w.writerow([lab.hum_file, lab.title, lab.artist, lab.part, lab.in_preview, "EXCLUDED",
-                        *[""] * len(SYSTEMS), ex.reason])
+                        *[""] * len(SYSTEMS), *[""] * len(off_cols), ex.reason])
     summary = results_dir / f"{ts}_metrics.csv"
     with open(summary, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["group_by", "group", "system", "n", "top1", "top3", "top5", "top5_ci95_lo", "top5_ci95_hi", "mrr"])
         for g_by, g, s, m in rows:
             w.writerow([g_by, g, s, m["n"], m["top1"], m["top3"], m["top5"], m["top5_lo"], m["top5_hi"], m["mrr"]])
-    out.append(f"Saved {per_hum} and {summary}")
+    saved = [per_hum, summary]
+    if off_rows:
+        offs = results_dir / f"{ts}_offset_accuracy.csv"
+        with open(offs, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["subset", "system", "n", "n_no_offset", f"within_{tol:g}s", "median_abs_err_s"])
+            for subset, sysname, m in off_rows:
+                w.writerow([subset, sysname, m["n"], m["n_no_offset"], m["within"], m["median_abs_err"]])
+        saved.append(offs)
+    out.append("Saved " + " and ".join(str(p) for p in saved))
     return "\n".join(out)

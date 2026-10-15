@@ -213,13 +213,14 @@ earworm stats                         # library size, songs per source, ingest f
 `eval/labels.csv`:
 
 ```
-hum_file,title,artist,part,in_preview,notes
-hum01.wav,Hotline Bling,Drake,chorus,y,
-hum02.wav,...,...,verse,unknown,
+hum_file,title,artist,part,in_preview,notes,true_offset_s
+hum01.wav,Hotline Bling,Drake,chorus,y,,12.5
+hum02.wav,...,...,verse,unknown,,
 ```
 
 - `part`: chorus | verse | hook_instrumental | rap | intro | other
 - `in_preview`: y | n | unknown (whether the hummed part falls inside the indexed audio)
+- `true_offset_s` (optional): start of the hummed part in seconds **into the indexed audio** (for Deezer songs, into the 30 s preview, not the full track). Blank for hums outside the indexed audio. Invalid values are an error.
 
 `run_eval.py` output:
 
@@ -237,7 +238,8 @@ Report details:
 - Top-5 accuracy carries a 95% Wilson interval (at 30 hums it is roughly +/-15 points).
 - Leave-one-out: fused accuracy with all three matchers and with each pair (dropped matcher weight 0), plus per-hum counts of hums whose rank improved/worsened and that entered/left the top 5. Judge a matcher by those counts, not by small accuracy differences.
 - Label rows map to library songs by rapidfuzz (`[eval] label_match_threshold`, default 85); the matched song is printed per hum, with a warning when another song scores within `label_ambiguity_margin` (e.g. a remix next to the original).
-- Not evaluated: offsets (labels carry no true start time).
+- Offsets: for hums with `true_offset_s`, report per matcher and fused the fraction within `[eval] offset_tolerance_s` (default 1.0 s) and the median absolute error, over all such hums and over those where fused ranked the song first. A matcher with no offset counts as a miss. Warn when a labeled hum has `in_preview=n` or an offset beyond the indexed audio. Per hum, log each matcher's offset (of the true song), the fused offset and which matcher it came from, and the maximum spread (max - min) between the three matchers.
+- Hum selection: `eval/pick_hums.py` draws a seeded random sample of the playlist (default 40 songs, seed 42) into `eval/hum_sample.csv`, independent of ingest results.
 
 ## Tests (`tests/`)
 
