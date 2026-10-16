@@ -83,6 +83,17 @@ label_match_threshold = 85.0       # rapidfuzz score to map a label row to a lib
 label_ambiguity_margin = 5.0       # warn when the runner-up song scores within this of the best
 offset_tolerance_s = 1.0            # an offset within this many seconds of true_offset_s counts as correct
 
+[checkhum]
+# Advisory warnings only (`earworm check-hum`); nothing here affects matching or the eval.
+min_duration_s = 4.0
+max_duration_s = 40.0
+min_rms_dbfs = -45.0               # RMS of the silence-trimmed hum
+max_clipped_fraction = 0.001       # samples at full scale
+min_voiced_fraction = 0.30
+min_voiced_s = 3.0
+min_notes = 8
+min_pitch_range_st = 1.0           # p95 - p5 of voiced pitch
+
 [deezer]
 search_url = "https://api.deezer.com/search"
 match_threshold = 85.0

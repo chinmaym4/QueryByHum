@@ -204,6 +204,7 @@ earworm search HUM_FILE [--artist NAME] [--k 5] [--matcher all|dtw|contour|rank]
 earworm explain HUM_FILE SONG_ID     # saves PNG: query contour overlaid on best-matching song segment, per matcher
 earworm eval [--weights-search]
 earworm stats                         # library size, songs per source, ingest failures
+earworm check-hum FILE [FILE ...]      # advisory preflight of a hum: level, clipping, voiced audio, notes (thresholds in config.toml [checkhum]); exit 1 only if a file is unreadable
 ```
 
 `search` prints a table: rank, title, artist, fused score, per-matcher z-scores, offset.

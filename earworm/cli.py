@@ -129,6 +129,26 @@ def cmd_eval(args, cfg) -> int:
     return 0
 
 
+def cmd_check_hum(args, cfg) -> int:
+    from .audio import AudioDecodeError
+    from .checkhum import format_report, hum_report
+
+    failed = 0
+    n_warn = 0
+    for path in args.files:
+        try:
+            rep = hum_report(path, cfg)
+        except AudioDecodeError as e:
+            print(f"{path}\n  ERROR: {e}")
+            failed += 1
+            continue
+        print(format_report(rep))
+        n_warn += bool(rep["warnings"])
+    if len(args.files) > 1:
+        print(f"{len(args.files)} files: {len(args.files) - failed - n_warn} OK, {n_warn} with warnings, {failed} unreadable")
+    return 1 if failed else 0
+
+
 def cmd_stats(args, cfg) -> int:
     from .library import Library
 
@@ -186,6 +206,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--weights-search", action="store_true")
     s.add_argument("--eval-dir", help="directory with labels.csv and hums/ (default: ./eval)")
     s.set_defaults(func=cmd_eval)
+
+    s = sub.add_parser("check-hum", help="preflight a hum recording (level, clipping, voiced audio, notes)")
+    s.add_argument("files", nargs="+")
+    s.set_defaults(func=cmd_check_hum)
 
     s = sub.add_parser("stats", help="library size, sources, ingest failures")
     s.add_argument("--list", action="store_true", help="also list song ids")

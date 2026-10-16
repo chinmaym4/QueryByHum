@@ -50,6 +50,7 @@ uv run earworm search hum.m4a [--artist Drake] [--k 5] [--matcher all|dtw|contou
 uv run earworm explain hum.m4a SONG_ID [--out plot.png]   # alignment plot per matcher
 uv run earworm eval [--weights-search]                    # real-hum evaluation report
 uv run earworm stats [--list]                             # library size, sources, failures, song ids
+uv run earworm check-hum hum.m4a [more files]                 # preflight a recording (advisory)
 ```
 
 - **Local folder:** title/artist come from tags (mutagen), else from an `Artist - Title.ext` filename.
@@ -79,8 +80,13 @@ Cost (measured on a 4-core CPU container, no GPU):
 1. Record 10–20 s of humming per song with any recorder (phone voice memo is fine; m4a, mp3,
    wav, webm/opus all work). Use one clear melodic line ("da da" or "hmm"), no lyrics needed.
    Start right on the melody; leading/trailing silence is trimmed automatically.
-2. Put the files in `eval/hums/` (audio files there are gitignored).
-3. Add one row per hum to `eval/labels.csv`:
+2. Check each take before labeling it: `uv run earworm check-hum eval/hums/*.m4a` reports level,
+   clipping, voiced audio, note count and pitch range, and warns about takes that are too short,
+   too quiet, clipped, mostly unvoiced or not melodic. The warnings are advisory (thresholds in
+   `config.toml` `[checkhum]`) and exist so a bad recording is not mistaken for a matcher failure.
+   Humming "da da" or "ta ta" gives clearer note starts than "mmm".
+3. Put the files in `eval/hums/` (audio files there are gitignored).
+4. Add one row per hum to `eval/labels.csv`:
 
    ```
    hum_file,title,artist,part,in_preview,notes,true_offset_s
@@ -97,7 +103,7 @@ Cost (measured on a 4-core CPU container, no GPU):
      into the full track (a preview is an excerpt from an unknown point of the song, so a
      full-track timestamp would be meaningless). Leave it blank for hums with `in_preview=n`.
      A non-numeric or negative value is an error, not silently ignored.
-4. Run `uv run earworm eval`. It prints:
+5. Run `uv run earworm eval`. It prints:
    - top-1/3/5 accuracy (with a 95% interval on top-5) and MRR for each matcher and the fused ranking;
    - a **leave-one-out** table: fused accuracy with each matcher dropped, plus how many hums got
      better or worse without it. Use the per-hum counts, not small accuracy differences, to judge
