@@ -4,7 +4,8 @@ import pytest
 from types import SimpleNamespace
 
 from earworm.evaluation import (HumLabel, HumResult, find_song, fused_rank, leave_one_out, matcher_offsets, metrics,
-                                offset_accuracy, pessimistic_rank, read_labels, sample_playlist, wilson_interval)
+                                offset_accuracy, pessimistic_rank, read_labels, sample_playlist, spread_by_group,
+                                wilson_interval)
 from earworm.matchers.base import NO_MATCH, MatchResult
 from earworm.search import Entry
 
@@ -118,3 +119,19 @@ def test_sample_playlist_is_seeded_distinct_and_ordered():
     assert all(rows[i - 1] == r for i, r in a)                      # 1-based row numbers line up
     with pytest.raises(ValueError):
         sample_playlist(rows, 154, 0)
+
+
+def test_spread_by_group_splits_on_fused_first():
+    def res(fused_rank, spread):
+        r = _off_res(None, fused_rank)
+        r.spread_s = spread
+        return r
+    rs = [res(1, 0.1), res(1, 2.0), res(1, 0.3), res(4, 5.0), res(9, float("nan")), res(2, 1.0)]
+    g = spread_by_group(rs, 1.0)
+    first, other = g["fused ranked song 1st"], g["all other hums"]
+    assert first == {"hums": 3, "with_spread": 3, "median": 0.3, "max": 2.0, "over_tol": 1}
+    assert other["hums"] == 3 and other["with_spread"] == 2          # NaN spread is counted as a hum, not a spread
+    assert other["median"] == pytest.approx(3.0) and other["max"] == 5.0
+    assert other["over_tol"] == 1                                    # 1.0 is not > 1.0
+    empty = spread_by_group([], 1.0)["all other hums"]
+    assert empty["hums"] == 0 and np.isnan(empty["median"]) and empty["over_tol"] == 0

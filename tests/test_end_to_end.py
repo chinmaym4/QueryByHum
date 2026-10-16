@@ -92,7 +92,8 @@ def test_cli_end_to_end(workspace, capsys):
     assert "EXCLUDED: hum02.mp3" in out and "song not in library" in out
     assert "Leave-one-out" in out and "without dtw" in out
     assert "excluded 1 not in library, 0 unreadable" in out
-    assert "Offset accuracy (seconds into the indexed audio" in out and "max spread between matchers" in out
+    assert "Offset accuracy (seconds into the indexed audio" in out and "max spread between matchers" in out \
+        and "Matcher offset spread by group" in out and "fused ranked song 1st" in out and "all other hums" in out
     block = out.splitlines()
     start = next(i for i, l in enumerate(block) if "all hums with true_offset_s" in l)
     fused_line = next(l for l in block[start:] if l.strip().startswith("fused"))

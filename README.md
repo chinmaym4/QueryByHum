@@ -108,6 +108,8 @@ Cost (measured on a 4-core CPU container, no GPU):
      for all such hums and for those where fused ranked the song first;
    - every hum's offset under each matcher and the fused offset, with the **maximum spread**
      between the three matchers (a large spread means they disagree about where the hum matches);
+   - that spread summarised separately for hums where fused ranked the song first and for all
+     other hums (count, median, max, and how many exceed `offset_tolerance_s`);
    - every hum's rank of the correct song under each matcher, and which library song its label
      matched (check for `AMBIGUOUS` warnings, e.g. a remix and the original both in the library);
    - excluded hums, by reason (song not in library / hum unreadable).

@@ -91,6 +91,23 @@ def matcher_offsets(result) -> tuple[dict[str, float], float]:
     return off, spread
 
 
+def spread_by_group(results: list["HumResult"], tolerance_s: float) -> dict[str, dict[str, float]]:
+    """Matcher offset spread (max - min over dtw/contour/rank) split by whether the
+    fused ranking put the correct song first. Per group: hums in the group, hums
+    with a spread (needs >= 2 matchers with an offset), median, max, and how many
+    spreads exceed the tolerance."""
+    groups = {"fused ranked song 1st": [r for r in results if r.ranks["fused"] == 1],
+              "all other hums": [r for r in results if r.ranks["fused"] != 1]}
+    out = {}
+    for name, rs in groups.items():
+        sp = np.array([r.spread_s for r in rs if np.isfinite(r.spread_s)], dtype=float)
+        out[name] = {"hums": len(rs), "with_spread": int(sp.size),
+                     "median": float(np.median(sp)) if sp.size else float("nan"),
+                     "max": float(sp.max()) if sp.size else float("nan"),
+                     "over_tol": int(np.sum(sp > tolerance_s))}
+    return out
+
+
 def offset_accuracy(results: list["HumResult"], tolerance_s: float, only_fused_top1: bool = False):
     """Per system: n, fraction within tolerance of true_offset_s, median |error|.
 
@@ -348,6 +365,12 @@ def run_eval(cfg: Section, entries: list[Entry], labels_path: Path, hums_dir: Pa
         wide = sum(sp > tol for sp, _ in spreads)
         out.append(f"  max spread between matchers: {worst[0]:.2f} s ({worst[1]}); "
                    f"{wide} of {len(spreads)} hums have spread > {tol:g} s")
+    out.append(f"Matcher offset spread by group (spread = max - min over dtw/contour/rank; tolerance {tol:g} s)")
+    out.append(f"  {'group':24s} {'hums':>5s} {'w/ spread':>10s} {'median (s)':>11s} {'max (s)':>8s} {'> tol':>6s}")
+    for name, g in spread_by_group(results, tol).items():
+        med = "-" if not np.isfinite(g["median"]) else f"{g['median']:.2f}"
+        mx = "-" if not np.isfinite(g["max"]) else f"{g['max']:.2f}"
+        out.append(f"  {name:24s} {g['hums']:>5d} {g['with_spread']:>10d} {med:>11s} {mx:>8s} {g['over_tol']:>6d}")
 
     out.append("Per-hum rank of the correct song")
     out.append(f"  {'hum_file':24s} {'part':18s} {'prev':5s} " + " ".join(f"{s:>7s}" for s in SYSTEMS)
